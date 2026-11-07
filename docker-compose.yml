@@ -1,0 +1,88 @@
+services:
+  db:
+    image: postgres:16-alpine
+    container_name: ushika-postgres
+    environment:
+      POSTGRES_DB: ushika
+      POSTGRES_USER: ushika
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-ushika_poc_password}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ushika -d ushika"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks: [ushika-net]
+
+  redis:
+    image: redis:7-alpine
+    container_name: ushika-redis
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    networks: [ushika-net]
+
+  backend:
+    build:
+      context: ./backend
+    container_name: ushika-backend
+    command: sh -c "python manage.py makemigrations documents --noinput && python manage.py migrate --noinput && gunicorn config.wsgi:application --bind 0.0.0.0:8000"
+    environment: &app_env
+      DJANGO_SECRET_KEY: ${DJANGO_SECRET_KEY:-local-poc-only-change-me}
+      DEBUG: "1"
+      ALLOWED_HOSTS: "*"
+      DB_NAME: ushika
+      DB_USER: ushika
+      DB_PASSWORD: ${POSTGRES_PASSWORD:-ushika_poc_password}
+      DB_HOST: db
+      DB_PORT: "5432"
+      CELERY_BROKER_URL: redis://redis:6379/0
+      CORS_ALLOWED_ORIGINS: http://localhost:3000
+    ports:
+      - "8000:8000"
+    volumes:
+      - uploads_data:/app/media
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks: [ushika-net]
+
+  worker:
+    build:
+      context: ./backend
+    container_name: ushika-celery
+    command: celery -A config worker --loglevel=info
+    environment: *app_env
+    volumes:
+      - uploads_data:/app/media
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks: [ushika-net]
+
+  frontend:
+    build:
+      context: ./frontend
+    container_name: ushika-frontend
+    environment:
+      NEXT_PUBLIC_API_URL: http://localhost:8000/api
+    ports:
+      - "3000:3000"
+    depends_on:
+      - backend
+    networks: [ushika-net]
+
+volumes:
+  postgres_data:
+  uploads_data:
+
+networks:
+  ushika-net:
+    driver: bridge
